@@ -1,0 +1,467 @@
+"use client";
+import { useState, useEffect } from "react"; // ✅ เพิ่ม useEffect
+import { X, Mail, ChevronDown, ArrowLeft, RefreshCw, User } from "lucide-react";
+import { createClient } from "@/utils/supabase/client"; 
+
+// Import Icons
+import { FcGoogle } from "react-icons/fc";
+import { FaFacebook } from "react-icons/fa";
+import { FaXTwitter } from "react-icons/fa6";
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  image: string;
+}
+
+interface AuthModalProps {
+  onClose: () => void;
+  onSuccess: (u: UserProfile) => void;
+}
+
+export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
+  const supabase = createClient();
+
+  const [view, setView] = useState<'options' | 'email' | 'verify' | 'onboarding'>('options');
+  const [loading, setLoading] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  
+  // Data State
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
+  
+  // Onboarding State
+  const [username, setUsername] = useState("");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  // ✅ เพิ่ม: Logic ตรวจสอบ Session เมื่อเปิด Modal
+  useEffect(() => {
+    const initModal = async () => {
+      // เช็คว่า User ล็อกอินอยู่หรือไม่ (กรณี Redirect กลับมา)
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session?.user) {
+        setLoading(true);
+        // เช็คว่ามี Profile ไหม
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+        
+        setLoading(false);
+
+        if (profile) {
+            // ถ้ามี Profile แล้ว แปลว่าเสร็จสมบูรณ์ (อาจจะปิด Modal หรือทำอย่างอื่น)
+        } else {
+            // ⚠️ ถ้าไม่มี Profile -> บังคับเข้าหน้า Onboarding
+            setUserId(session.user.id);
+            if (session.user.email) setEmail(session.user.email);
+            setView('onboarding');
+        }
+      }
+    };
+    initModal();
+  }, []);
+
+  // --- 1. Login with Google & Facebook ---
+  const handleLogin = async (provider: 'google' | 'facebook' | 'twitter') => {
+    if (provider === 'twitter') {
+      alert("Twitter login coming soon!");
+      return;
+    }
+
+    setLoading(true);
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: provider,
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+        queryParams: provider === 'google' ? {
+          access_type: 'offline',
+          prompt: 'consent select_account',
+        } : undefined,
+      },
+    });
+    
+    if (error) {
+      alert(error.message);
+      setLoading(false);
+    }
+  };
+
+  // --- 2. Request OTP (Email) ---
+  const handleEmailSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) return;
+    setLoading(true);
+
+    const { error } = await supabase.auth.signInWithOtp({ email });
+
+    setLoading(false);
+    if (error) {
+      alert(error.message);
+    } else {
+      setView('verify');
+    }
+  };
+
+  // --- 3. Verify OTP & Check Profile ---
+  const handleVerifySubmit = async () => {
+    const otpValue = otp.join("");
+    if (otpValue.length < 6) {
+        alert("Please enter a valid 6-digit OTP");
+        return;
+    }
+    
+    setLoading(true);
+    
+    const { data: { session }, error } = await supabase.auth.verifyOtp({
+      email,
+      token: otpValue,
+      type: 'email',
+    });
+
+    if (error || !session) {
+      alert(error?.message || "Verification failed");
+      setLoading(false);
+      return;
+    }
+
+    const uid = session.user.id;
+    setUserId(uid);
+
+    // เช็ค Profile
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', uid)
+      .single();
+
+    setLoading(false);
+
+    if (profile) {
+      onSuccess({
+        id: uid,
+        name: profile.username,
+        email: email,
+        image: profile.avatar_url || ""
+      });
+      onClose();
+    } else {
+      // ยังไม่มี Profile -> ไปหน้า Onboarding
+      setView('onboarding');
+    }
+  };
+
+  // --- 4. Submit Onboarding (Force Create Profile) ---
+  const handleOnboardingSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username || !userId || !avatarFile) {
+        alert("Please fill all fields");
+        return;
+    }
+
+    setLoading(true);
+    let avatarUrl = "";
+
+    try {
+        const fileExt = avatarFile.name.split('.').pop();
+        const fileName = `${userId}-${Date.now()}.${fileExt}`;
+        const filePath = `${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+            .from('avatars')
+            .upload(filePath, avatarFile);
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+            .from('avatars')
+            .getPublicUrl(filePath);
+        
+        avatarUrl = publicUrl;
+
+        const { error: insertError } = await supabase
+            .from('profiles')
+            .insert({
+                id: userId,
+                username: username,
+                avatar_url: avatarUrl,
+                role: 'user',
+            });
+
+        if (insertError) throw insertError;
+
+        onSuccess({
+            id: userId,
+            name: username,
+            email: email,
+            image: avatarUrl
+        });
+        onClose();
+
+    } catch (error: any) {
+        alert("Error creating profile: " + error.message);
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  const handleChange = (element: HTMLInputElement, index: number) => {
+    if (isNaN(Number(element.value))) return false;
+    const newOtp = [...otp];
+    newOtp[index] = element.value;
+    setOtp(newOtp);
+    if (element.nextSibling && element.value !== "") {
+      (element.nextSibling as HTMLInputElement).focus();
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, index: number) => {
+    if (e.key === "Backspace" && otp[index] === "" && index > 0) {
+      // @ts-ignore
+      e.target.previousSibling.focus();
+    }
+  };
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+        const file = e.target.files[0];
+        setAvatarFile(file);
+        setAvatarPreview(URL.createObjectURL(file));
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="relative bg-[#FAFAFA] w-full max-w-[558px] min-h-[513px] rounded-[16px] shadow-[4px_9px_8px_0px_rgba(0,0,0,0.45)] flex flex-col items-center px-[96px] py-[70px] transition-all duration-300">
+
+        {/* ✅ ปรับปรุง: ซ่อนปุ่ม Close X ถ้าอยู่ในหน้า Onboarding เพื่อบังคับกรอก */}
+        {view !== 'onboarding' && (
+             <button onClick={onClose} className="absolute top-6 right-6 p-2 text-gray-400 hover:bg-gray-200 rounded-full transition">
+                <X className="w-6 h-6" />
+             </button>
+        )}
+
+        {/* ปุ่ม Back (แสดงเฉพาะหน้า Email/Verify) */}
+        {(view === 'email' || view === 'verify') && (
+          <button onClick={() => setView('options')} className="absolute top-6 left-6 p-2 text-gray-500 hover:bg-gray-200 rounded-full transition">
+            <ArrowLeft className="w-6 h-6" />
+          </button>
+        )}
+
+        {/* ================= VIEW 1: OPTIONS ================= */}
+        {view === 'options' && (
+          <div className="flex flex-col items-center w-full animate-in slide-in-from-left-4 duration-300">
+            <h2 className="text-[36px] font-Inter font-[900] text-[#194473] leading-none mb-[32px] text-center tracking-tight">
+              Sign in
+            </h2>
+            <div className="w-full flex flex-col items-center gap-[16px]">
+              
+              <button
+                onClick={() => handleLogin('google')}
+                disabled={loading}
+                className="relative w-[366px] h-[40px] flex items-center justify-center bg-[#F5F5F5] border-[2px] border-[#EEEEEE] hover:bg-[#E0E0E0] rounded-[24px] transition-colors active:scale-[0.99] cursor-pointer"
+              >
+                <div className="absolute left-[60px] flex items-center justify-center">
+                  <FcGoogle className="w-[24px] h-[24px]" />
+                </div>
+                <div className="w-[110px] text-left whitespace-nowrap">
+                  <span className="text-[16px] font-Inter font-[400] text-[#212121] leading-none ">
+                    Sign in with Google
+                  </span>
+                </div>
+              </button>
+
+              <button
+                onClick={() => setShowMore(!showMore)}
+                className="h-[24px] flex items-center justify-center gap-1 text-[#2196F3] text-[12px] font-Inter font-[400] hover:underline transition-all cursor-pointer"
+              >
+                {showMore ? "Hide options" : "Show more Options"}
+                <ChevronDown className={`w-[16px] h-[16px] transition-transform duration-300 ${showMore ? "rotate-180" : ""}`} />
+              </button>
+
+              {showMore && (
+                <div className="w-[200px] h-[40px] flex items-center justify-center gap-[16px] animate-in slide-in-from-top-2 fade-in duration-300 mb-2">
+                  <button onClick={() => handleLogin('facebook')} className="w-[56px] h-[40px] flex items-center justify-center bg-[#F5F5F5] border-[2px] border-[#EEEEEE] hover:bg-[#E0E0E0] rounded-[4px] transition-all active:scale-95 cursor-pointer">
+                    <FaFacebook className="w-[24px] h-[24px] text-[#1877F2]" />
+                  </button>
+                  <button onClick={() => handleLogin('twitter')} className="w-[56px] h-[40px] flex items-center justify-center bg-[#F5F5F5] border-[2px] border-[#EEEEEE] hover:bg-[#E0E0E0] rounded-[4px] transition-all active:scale-95 cursor-pointer">
+                    <FaXTwitter className="w-[24px] h-[24px] text-black" />
+                  </button>
+                </div>
+              )}
+
+              <div className="relative w-[366px] flex items-center justify-center py-2">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-[#EEEEEE]"></div></div>
+                <span className="relative bg-[#FAFAFA] px-4 text-[#9E9E9E] text-[16px] font-Inter font-[400]">or</span>
+              </div>
+
+              <button
+                onClick={() => setView('email')}
+                className="relative w-[366px] h-[40px] flex items-center justify-center bg-[#F5F5F5] border-[2px] border-[#EEEEEE] hover:bg-[#E0E0E0] rounded-[24px] transition-colors active:scale-[0.99] cursor-pointer"
+              >
+                <div className="absolute left-[60px] flex items-center justify-center">
+                  <Mail className="w-[24px] h-[24px] text-[#212121]" strokeWidth={1.5} />
+                </div>
+                <div className="w-[110px] text-left whitespace-nowrap">
+                  <span className="text-[16px] font-Inter font-[400] text-[#212121] leading-none">
+                    Sign in with Email
+                  </span>
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ================= VIEW 2: EMAIL FORM ================= */}
+        {view === 'email' && (
+          <div className="flex flex-col items-center animate-in slide-in-from-right-4 duration-300 w-full">
+            <h2 className="text-[36px] font-Inter font-[900] text-[#194473] leading-none mb-[32px] text-center tracking-tight">
+              Sign in
+            </h2>
+            <form onSubmit={handleEmailSubmit} className="w-[360px] flex flex-col gap-[24px]">
+              <div className="flex flex-col gap-[16px]">
+                <label className="text-[18px] font-Inter font-[400] text-[#212121] leading-none">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  className="w-full h-[40px] bg-[#F5F5F5] border-[2px] border-[#EEEEEE] rounded-[8px] px-[16px] py-[8px] text-[14px] font-Inter font-[400] text-[#212121] outline-none focus:border-[#2196F3] transition-all placeholder:text-[#9E9E9E]"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading || !email}
+                className={`w-full h-[35px] text-[16px] font-Inter font-[400] rounded-[8px] transition-all active:scale-[0.99] flex items-center justify-center cursor-pointer
+                ${email ? "bg-[#2196F3] hover:bg-[#1976D2] text-white shadow-md" : "bg-[#C0C0C0] text-[#616161] cursor-not-allowed border border-[#EEEEEE]"}
+              `}
+              >
+                {loading ? "Sending..." : "Request OTP"}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* ================= VIEW 3: VERIFY EMAIL (OTP) ================= */}
+        {view === 'verify' && (
+          <div className="flex flex-col items-center animate-in zoom-in-95 duration-300 mt-4" style={{ width: '360px' }}>
+            <h2 className="text-[36px] font-Inter font-[900] text-[#194473] leading-none mb-[32px] text-center tracking-tight">
+              Verify your email
+            </h2>
+            <div className="mb-8 text-[#212121]" style={{ fontFamily: 'Inter', fontWeight: 400, fontSize: '12px', lineHeight: '150%', textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <p>The Verification link has been sent. If you don’t have it in your inbox, check spam folder</p>
+              <p>The OTP will be sent to your email. <span className="font-bold">{email}</span></p>
+            </div>
+
+            <div className="flex justify-between w-full mb-8">
+              {otp.map((data, index) => (
+                <input
+                  key={index}
+                  type="text"
+                  maxLength={1}
+                  value={data}
+                  onChange={(e) => handleChange(e.target, index)}
+                  onKeyDown={(e) => handleKeyDown(e, index)}
+                  className="focus:outline-none focus:border-[#2196F3] transition-colors text-center text-[#212121] font-bold text-lg"
+                  style={{ width: '40px', height: '40px', backgroundColor: '#F5F5F5', border: '2px solid #EEEEEE', borderRadius: '8px', padding: '8px 0' }}
+                />
+              ))}
+            </div>
+
+            <div className="w-full flex justify-end mb-8">
+              <button
+                className="flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"
+                style={{ width: '150px', height: '24px', backgroundColor: '#F5F5F5', border: '2px solid #EEEEEE', borderRadius: '8px', padding: '4px 16px', cursor: 'pointer' }}
+              >
+                <RefreshCw size={12} color="#9E9E9E" />
+                <span style={{ fontFamily: 'Inter', fontWeight: 400, fontSize: '12px', color: '#9E9E9E', whiteSpace: 'nowrap' }}>
+                  Resend OTP
+                </span>
+              </button>
+            </div>
+
+            <button
+              onClick={handleVerifySubmit}
+              disabled={loading}
+              className={`w-full h-[35px] text-[16px] font-Inter font-[400] rounded-[8px] transition-all active:scale-[0.99] flex items-center justify-center cursor-pointer
+              ${otp.join("").length === 6
+                ? "bg-[#2196F3] hover:bg-[#1976D2] text-white shadow-md"
+                : "bg-[#C0C0C0] text-[#616161] cursor-not-allowed border border-[#EEEEEE]"
+              }`}
+            >
+              {loading ? "Verifying..." : "Verify"}
+            </button>
+          </div>
+        )}
+
+        {/* ================= VIEW 4: ONBOARDING (Create Profile) ================= */}
+        {view === 'onboarding' && (
+            <div className="flex flex-col items-center animate-in slide-in-from-right-4 duration-300 w-full">
+                <h2 className="text-[30px] font-Inter font-[900] text-[#194473] leading-none mb-6 text-center tracking-tight">
+                    Create Profile
+                </h2>
+                <form onSubmit={handleOnboardingSubmit} className="w-[360px] flex flex-col gap-[20px]">
+                    
+                    {/* Avatar Upload */}
+                    <div className="flex flex-col items-center gap-4">
+                        <div className="relative w-24 h-24 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden group hover:border-[#2196F3] transition-colors cursor-pointer">
+                            {avatarPreview ? (
+                                <img src={avatarPreview} alt="Preview" className="w-full h-full object-cover" />
+                            ) : (
+                                <User className="w-10 h-10 text-gray-400 group-hover:text-[#2196F3]" />
+                            )}
+                            <input 
+                                type="file" 
+                                accept="image/*" 
+                                onChange={handleAvatarChange} 
+                                className="absolute inset-0 opacity-0 cursor-pointer"
+                                required
+                            />
+                            {!avatarPreview && <div className="absolute bottom-2 text-[10px] text-gray-500">Upload</div>}
+                        </div>
+                        <p className="text-xs text-gray-500">Tap to upload avatar *</p>
+                    </div>
+
+                    {/* Username Input */}
+                    <div className="flex flex-col gap-[12px]">
+                        <label className="text-[16px] font-Inter font-[400] text-[#212121]">
+                            Username <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                            type="text"
+                            placeholder="Enter unique username"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            required
+                            minLength={3}
+                            className="w-full h-[40px] bg-[#F5F5F5] border-[2px] border-[#EEEEEE] rounded-[8px] px-[16px] py-[8px] text-[14px] font-Inter font-[400] text-[#212121] outline-none focus:border-[#2196F3] transition-all placeholder:text-[#9E9E9E]"
+                        />
+                    </div>
+
+                    {/* Submit Button */}
+                    <button
+                        type="submit"
+                        disabled={loading || !username || !avatarFile}
+                        className={`w-full h-[40px] mt-2 text-[16px] font-Inter font-[400] rounded-[8px] transition-all active:scale-[0.99] flex items-center justify-center cursor-pointer
+                        ${(username && avatarFile) ? "bg-[#2196F3] hover:bg-[#1976D2] text-white shadow-md" : "bg-[#C0C0C0] text-[#616161] cursor-not-allowed border border-[#EEEEEE]"}
+                        `}
+                    >
+                        {loading ? "Creating Profile..." : "Complete Signup"}
+                    </button>
+                </form>
+            </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
