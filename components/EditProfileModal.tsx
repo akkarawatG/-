@@ -84,7 +84,7 @@ export default function EditProfileModal({ user, onClose, onSuccess }: EditProfi
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-xl font-bold text-gray-900">
-             Complete Your Profile
+             {username}
           </h3>
           <button onClick={onClose} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition">
             <X size={20} />

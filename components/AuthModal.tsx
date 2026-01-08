@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react"; // ✅ เพิ่ม useEffect
+import { useState, useEffect } from "react";
 import { X, Mail, ChevronDown, ArrowLeft, RefreshCw, User } from "lucide-react";
 import { createClient } from "@/utils/supabase/client"; 
 
@@ -31,21 +31,22 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   
+  // ✅ เพิ่ม: State สำหรับ Timer
+  const [timer, setTimer] = useState(0);
+  
   // Onboarding State
   const [username, setUsername] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
 
-  // ✅ เพิ่ม: Logic ตรวจสอบ Session เมื่อเปิด Modal
+  // Logic ตรวจสอบ Session เมื่อเปิด Modal
   useEffect(() => {
     const initModal = async () => {
-      // เช็คว่า User ล็อกอินอยู่หรือไม่ (กรณี Redirect กลับมา)
       const { data: { session } } = await supabase.auth.getSession();
       
       if (session?.user) {
         setLoading(true);
-        // เช็คว่ามี Profile ไหม
         const { data: profile } = await supabase
           .from('profiles')
           .select('*')
@@ -55,9 +56,8 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
         setLoading(false);
 
         if (profile) {
-            // ถ้ามี Profile แล้ว แปลว่าเสร็จสมบูรณ์ (อาจจะปิด Modal หรือทำอย่างอื่น)
+            // profile exists
         } else {
-            // ⚠️ ถ้าไม่มี Profile -> บังคับเข้าหน้า Onboarding
             setUserId(session.user.id);
             if (session.user.email) setEmail(session.user.email);
             setView('onboarding');
@@ -66,6 +66,17 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
     };
     initModal();
   }, []);
+
+  // ✅ เพิ่ม: Logic นับถอยหลัง Timer
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (timer > 0) {
+      interval = setInterval(() => {
+        setTimer((prev) => prev - 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [timer]);
 
   // --- 1. Login with Google & Facebook ---
   const handleLogin = async (provider: 'google' | 'facebook' | 'twitter') => {
@@ -105,7 +116,24 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
     if (error) {
       alert(error.message);
     } else {
+      setTimer(60); // ✅ เริ่มนับเวลา 60 วินาทีเมื่อส่งสำเร็จ
       setView('verify');
+    }
+  };
+
+  // ✅ เพิ่ม: ฟังก์ชัน Resend OTP
+  const handleResendOtp = async () => {
+    if (timer > 0) return; // ถ้าเวลายังไม่หมด ห้ามกด
+    
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOtp({ email });
+    setLoading(false);
+
+    if (error) {
+      alert(error.message);
+    } else {
+      setTimer(60); // ✅ รีเซ็ตเวลาใหม่เป็น 60 วินาที
+      alert("OTP resent successfully!");
     }
   };
 
@@ -152,7 +180,6 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
       });
       onClose();
     } else {
-      // ยังไม่มี Profile -> ไปหน้า Onboarding
       setView('onboarding');
     }
   };
@@ -240,14 +267,12 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="relative bg-[#FAFAFA] w-full max-w-[558px] min-h-[513px] rounded-[16px] shadow-[4px_9px_8px_0px_rgba(0,0,0,0.45)] flex flex-col items-center px-[96px] py-[70px] transition-all duration-300">
 
-        {/* ✅ ปรับปรุง: ซ่อนปุ่ม Close X ถ้าอยู่ในหน้า Onboarding เพื่อบังคับกรอก */}
         {view !== 'onboarding' && (
              <button onClick={onClose} className="absolute top-6 right-6 p-2 text-gray-400 hover:bg-gray-200 rounded-full transition">
                 <X className="w-6 h-6" />
              </button>
         )}
 
-        {/* ปุ่ม Back (แสดงเฉพาะหน้า Email/Verify) */}
         {(view === 'email' || view === 'verify') && (
           <button onClick={() => setView('options')} className="absolute top-6 left-6 p-2 text-gray-500 hover:bg-gray-200 rounded-full transition">
             <ArrowLeft className="w-6 h-6" />
@@ -378,13 +403,16 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
             </div>
 
             <div className="w-full flex justify-end mb-8">
+              {/* ✅ ปรับปรุงปุ่ม Resend OTP */}
               <button
-                className="flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"
-                style={{ width: '150px', height: '24px', backgroundColor: '#F5F5F5', border: '2px solid #EEEEEE', borderRadius: '8px', padding: '4px 16px', cursor: 'pointer' }}
+                onClick={handleResendOtp}
+                disabled={timer > 0 || loading}
+                className={`flex items-center justify-center gap-2 transition-colors ${timer > 0 ? 'cursor-not-allowed opacity-50' : 'hover:bg-gray-200 cursor-pointer'}`}
+                style={{ width: 'auto', minWidth: '150px', height: '24px', backgroundColor: '#F5F5F5', border: '2px solid #EEEEEE', borderRadius: '8px', padding: '4px 16px' }}
               >
-                <RefreshCw size={12} color="#9E9E9E" />
+                <RefreshCw size={12} color="#9E9E9E" className={loading ? "animate-spin" : ""} />
                 <span style={{ fontFamily: 'Inter', fontWeight: 400, fontSize: '12px', color: '#9E9E9E', whiteSpace: 'nowrap' }}>
-                  Resend OTP
+                  {timer > 0 ? `Resend in ${timer}s` : "Resend OTP"}
                 </span>
               </button>
             </div>
