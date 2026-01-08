@@ -466,7 +466,7 @@ function ExploreContent() {
                     </h4>
                     <button
                       onClick={clearAllFilters}
-                      className="text-[12px] text-gray-500 hover:underline"
+                      className="text-[12px] text-gray-500 hover:text-[#3A82CE] hover:underline"
                     >
                       Clear
                     </button>
