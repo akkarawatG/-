@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { Suspense, useState, useEffect, MouseEvent } from "react";
+import { Suspense, useState, useEffect, MouseEvent, useRef } from "react";
 import { MapPin, Clock, Star, ArrowLeft, ExternalLink, Sun, X, ChevronLeft, ChevronRight, Lightbulb, Search } from "lucide-react";
 
 // ✅ Import Service & Types
@@ -21,11 +21,15 @@ function DetailContent() {
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(false);
 
-    // Gallery State
+    // Hero Slider State (สำหรับ Slider หน้าหลัก)
     const [currentImageIndex, setCurrentImageIndex] = useState(0);
     const [isTransitioning, setIsTransitioning] = useState(true);
+
+    // Modal State
     const [showModal, setShowModal] = useState(false);
-    const [modalIndex, setModalIndex] = useState(0);
+
+    // ✅ Gallery Queue State (สำหรับ Modal Logic ใหม่)
+    const [galleryQueue, setGalleryQueue] = useState<{ url: string }[]>([]);
 
     // Review States
     const [activeStarFilter, setActiveStarFilter] = useState("All");
@@ -37,11 +41,9 @@ function DetailContent() {
             if (!id) return;
             setIsLoading(true);
             try {
-                // 1. Try fetching from Supabase
                 const dbPlace = await getPlaceById(id);
 
                 if (dbPlace) {
-                    // ✅ Fix: ถ้าใน DB ไม่มี travel_tips หรือเป็นค่าว่าง ให้ใส่ Default เพื่อความสวยงาม
                     if (!dbPlace.travel_tips || Object.keys(dbPlace.travel_tips).length === 0) {
                         dbPlace.travel_tips = {
                             footwear: "We recommend comfortable walking shoes because you'll be walking on grass and dirt.",
@@ -50,54 +52,40 @@ function DetailContent() {
                     }
                     setPlace(dbPlace);
                 } else {
-                    // 2. Fallback to Mock Data
                     const mockPlace = MOCK_ATTRACTIONS.find((item) => String(item.id) === String(id));
-                    
+
                     if (mockPlace) {
-                        // ✅ Helper: Normalize Images (แปลงรูปภาพให้เป็น { url: string }[] เสมอ)
                         const normalizeMockImages = (imgs: any) => {
-                             if (!imgs) return [];
-                             if (Array.isArray(imgs)) {
-                                 return imgs.map(img => {
-                                     if (typeof img === 'string') return { url: img }; 
-                                     if (typeof img === 'object') return { url: img.url || img.src || img.link || "" }; 
-                                     return { url: "" };
-                                 }).filter(i => i.url);
-                             }
-                             return [];
+                            if (!imgs) return [];
+                            if (Array.isArray(imgs)) {
+                                return imgs.map(img => {
+                                    if (typeof img === 'string') return { url: img };
+                                    if (typeof img === 'object') return { url: img.url || img.src || img.link || "" };
+                                    return { url: "" };
+                                }).filter(i => i.url);
+                            }
+                            return [];
                         };
 
-                        // ✅ Transform Mock Data to Place Type
                         const transformedPlace: Place = {
                             ...mockPlace,
                             id: String(mockPlace.id),
                             province_state: mockPlace.location.province_state,
                             country: mockPlace.location.country,
                             continent: mockPlace.location.continent,
-                            
-                            // Map description (รองรับหลายชื่อ field)
                             description_long: (mockPlace as any).description || mockPlace.description_long || mockPlace.description_short || "No description available.",
-                            
                             opening_hours: mockPlace.opening_hours_text,
                             best_season: mockPlace.best_season_to_visit,
                             formatted_address: `${mockPlace.location.province_state}, ${mockPlace.location.country}`,
-                            
-                            // ✅ แก้ไข URL Syntax ให้ถูกต้อง
                             google_maps_url: `https://www.google.com/maps?q=${mockPlace.location.lat},${mockPlace.location.lon}`,
-                            
-                            // ✅ Map Price (with Fallback)
                             price_detail: (mockPlace as any).price_detail || "Free entry",
-
-                            // ✅ Normalize Images
                             images: normalizeMockImages(mockPlace.images),
-                            
-                            // ✅ Map Tips (Default values for Mock)
                             travel_tips: {
                                 footwear: "We recommend comfortable walking shoes because you'll be walking on grass and dirt.",
                                 outfit: "White, cream, or brightly colored clothing like red or yellow will help you stand out."
                             }
                         } as unknown as Place;
-                        
+
                         setPlace(transformedPlace);
                     } else {
                         setError(true);
@@ -114,18 +102,18 @@ function DetailContent() {
         fetchData();
     }, [id]);
 
-
     // --- DERIVED DATA ---
     const rawImages = place?.images || [];
     const allImages = rawImages.length > 0
         ? rawImages.map(img => (typeof img === 'object' && 'url' in img ? img : { url: img as string }))
         : [{ url: "https://via.placeholder.com/1200x600?text=No+Image" }];
 
+    // Hero Slider (Infinite Loop needs duplicated images)
     const extendedImages = allImages.length > 1
         ? [...allImages, allImages[0]]
         : allImages;
 
-    const currentReviews = (place as any)?.reviews || []; 
+    const currentReviews = (place as any)?.reviews || [];
 
     const filteredReviews = currentReviews.filter((review: any) => {
         if (activeStarFilter === "All") return true;
@@ -133,32 +121,16 @@ function DetailContent() {
         return review.rating === starValue;
     });
 
-    // ✅ HELPER: Render Tips (Specific to Footwear & Outfit)
     const renderTips = () => {
         const tips = place?.travel_tips as any;
+        if (!tips) return <p className="font-inter text-[14px] text-[#212121] leading-tight">No tips available.</p>;
+        if (typeof tips === 'string') return <p className="font-inter text-[14px] text-[#212121] leading-tight">{tips}</p>;
 
-        if (!tips) {
-            return (
-                <p className="font-inter text-[14px] text-[#212121] leading-tight">
-                    No tips available.
-                </p>
-            );
-        }
-
-        if (typeof tips === 'string') {
-             return <p className="font-inter text-[14px] text-[#212121] leading-tight">{tips}</p>;
-        }
-
-        // Extract specific fields (รองรับหลายชื่อ key ที่อาจเก็บใน DB)
         const footwear = tips.footwear || tips.shoes || tips.general;
         const outfit = tips.outfit_recommendation || tips.outfit || tips.clothing;
 
         if (!footwear && !outfit) {
-            return (
-                 <p className="font-inter text-[14px] text-[#212121] leading-tight">
-                    No specific recommendations available.
-                </p>
-            );
+            return <p className="font-inter text-[14px] text-[#212121] leading-tight">No specific recommendations available.</p>;
         }
 
         return (
@@ -178,8 +150,7 @@ function DetailContent() {
         );
     };
 
-
-    // --- EFFECT: SLIDER AUTO PLAY ---
+    // --- EFFECT: HERO SLIDER AUTO PLAY ---
     useEffect(() => {
         if (allImages.length <= 1 || showModal) return;
         const interval = setInterval(() => {
@@ -188,7 +159,7 @@ function DetailContent() {
         return () => clearInterval(interval);
     }, [allImages.length, showModal]);
 
-    // --- EFFECT: SLIDER INFINITE LOOP ---
+    // --- EFFECT: HERO SLIDER INFINITE LOOP ---
     useEffect(() => {
         if (currentImageIndex === extendedImages.length - 1) {
             const timeout = setTimeout(() => {
@@ -204,21 +175,59 @@ function DetailContent() {
         }
     }, [currentImageIndex, extendedImages.length]);
 
-    // --- HANDLERS ---
+
+    // --- HANDLERS (MODAL LOGIC UPDATED) ---
+
+    // 1. Open Modal: Prepare the Queue
     const openModal = () => {
-        const realIndex = currentImageIndex >= allImages.length ? 0 : currentImageIndex;
-        setModalIndex(realIndex);
+        // สร้างคิวใหม่โดยให้รูปปัจจุบัน (จาก Hero Slider) เป็นตัวแรก (Index 0)
+        // และรูปอื่นๆ เรียงต่อกันเป็นวงกลม
+        const currentIndex = currentImageIndex >= allImages.length ? 0 : currentImageIndex;
+        const rotatedQueue = [
+            ...allImages.slice(currentIndex),
+            ...allImages.slice(0, currentIndex)
+        ];
+
+        setGalleryQueue(rotatedQueue);
         setShowModal(true);
     };
 
-    const nextModalImage = (e: MouseEvent<HTMLButtonElement>) => {
-        e.stopPropagation();
-        setModalIndex((prev) => (prev + 1) % allImages.length);
+    // 2. Next: Rotate Left (รูปแรกไปต่อท้าย)
+    // [A, B, C, D] -> [B, C, D, A]
+    const nextModalImage = (e?: MouseEvent<HTMLButtonElement>) => {
+        e?.stopPropagation();
+        setGalleryQueue((prev) => {
+            if (prev.length <= 1) return prev;
+            const [first, ...rest] = prev;
+            return [...rest, first];
+        });
     };
 
-    const prevModalImage = (e: MouseEvent<HTMLButtonElement>) => {
-        e.stopPropagation();
-        setModalIndex((prev) => (prev - 1 + allImages.length) % allImages.length);
+    // 3. Prev: Rotate Right (รูปท้ายมาแทรกหน้า)
+    // [A, B, C, D] -> [D, A, B, C]
+    const prevModalImage = (e?: MouseEvent<HTMLButtonElement>) => {
+        e?.stopPropagation();
+        setGalleryQueue((prev) => {
+            if (prev.length <= 1) return prev;
+            const last = prev[prev.length - 1];
+            const rest = prev.slice(0, -1);
+            return [last, ...rest];
+        });
+    };
+
+    // 4. Click Thumbnail: Rotate until clicked image is first
+    const clickThumbnail = (indexInQueue: number) => {
+        if (indexInQueue === 0) return; // คลิกรูป Main ไม่ต้องทำอะไร
+
+        setGalleryQueue((prev) => {
+            // หมุน array ให้รูปที่คลิก (indexInQueue) มาอยู่ที่ index 0
+            const clickedImage = prev[indexInQueue];
+            const newQueue = [
+                ...prev.slice(indexInQueue),
+                ...prev.slice(0, indexInQueue)
+            ];
+            return newQueue;
+        });
     };
 
     if (isLoading) return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading...</div>;
@@ -234,53 +243,105 @@ function DetailContent() {
         );
     }
 
+    // Modal Display Logic
+    const mainImage = galleryQueue[0] || { url: "" }; // รูปที่ 1 คือ Main
+    const thumbnails = galleryQueue.slice(1, 7); // รูปที่ 2-7 คือ Thumbnails (แสดงแค่ 6 รูป)
+
     return (
         <div className="min-h-screen bg-[#FFFFFF] font-inter text-gray-800 pb-20 relative">
 
-            {/* MODAL POPUP SECTION */}
+            {/* ✅ MODAL POPUP SECTION (QUEUE LOGIC) */}
             {showModal && (
                 <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+                    {/* Backdrop */}
                     <div
-                        className="absolute inset-0 bg-black/70"
+                        className="absolute inset-0 bg-black/80 backdrop-blur-sm"
                         onClick={() => setShowModal(false)}
                     />
-                    <div className="relative bg-white flex flex-col z-10"
-                        style={{ width: '1128px', height: '633px', borderRadius: '8px', border: '2px solid #EEEEEE' }}
+
+                    {/* Modal Content Box */}
+                    <div className="relative bg-white flex flex-col z-10 overflow-hidden shadow-2xl rounded-[16px]"
+                        style={{ width: '835px', height: '624px' }}
                     >
-                        <div className="w-full flex justify-between items-center bg-white"
-                            style={{ height: '103px', borderTopLeftRadius: '8px', borderTopRightRadius: '8px', borderBottom: '2px solid #EEEEEE', paddingTop: '32px', paddingBottom: '32px', paddingRight: '64px', paddingLeft: '65px' }}
-                        >
-                            <div className="flex items-center gap-4">
-                                <h2 style={{ fontFamily: 'Inter', fontWeight: 600, fontSize: '32px', lineHeight: '100%', color: '#194473' }}>
+                        {/* Header */}
+                        <div className="w-[835px] h-[103px] flex justify-between items-center bg-white border-[2px] border-[#EEEEEE] rounded-tl-[8px] rounded-tr-[8px] pt-[32px] pr-[64px] pb-[32px] pl-[65px] shrink-0">
+                            <div className="w-[623px] h-[39px] flex items-center gap-[16px]">
+                                <h3 className="font-Inter font-semibold text-[32px] text-[#194473] leading-[100%] truncate">
                                     {place.name}
-                                </h2>
-                                <div className="flex items-center gap-2">
+                                </h3>
+                                <div className="w-[172px] h-[24px] flex items-center gap-[8px] flex-shrink-0">
                                     <div className="flex items-center gap-1">
                                         {[1, 2, 3, 4, 5].map((star) => (
                                             <Star key={star} size={24} className={`${star <= Math.round(place.rating || 0) ? "fill-[#FFCC00] text-[#FFCC00]" : "fill-gray-300 text-gray-300"}`} />
                                         ))}
                                     </div>
-                                    <span style={{ fontFamily: 'Inter', fontWeight: 400, fontSize: '20px', lineHeight: '100%', color: '#212121' }}>
+                                    <span className="font-Inter font-normal text-[20px] leading-[100%] text-[#212121]">
                                         ({place.rating || 0})
                                     </span>
                                 </div>
                             </div>
-                            <button onClick={() => setShowModal(false)} style={{ width: '32px', height: '32px', borderRadius: '30px', backgroundColor: '#616161', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
-                                <X size={14} strokeWidth={3} />
+                            <button
+                                onClick={() => setShowModal(false)}
+                                className="w-[24px] h-[24px] rounded-[30px] bg-[#616161] hover:bg-[#4a4a4a] flex items-center justify-center gap-[10px] text-white transition-colors"
+                            >
+                                <X size={14} strokeWidth={2.5} />
                             </button>
                         </div>
-                        <div className="flex-1 flex items-center justify-between px-10 relative bg-black/5 overflow-hidden">
-                            <button onClick={prevModalImage} style={{ width: '32px', height: '32px', borderRadius: '30px', backgroundColor: '#E0E0E0', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="hover:bg-gray-300 transition">
-                                <ChevronLeft size={20} color="white" strokeWidth={3} />
-                            </button>
-                            <div className="flex justify-center items-center w-full h-full p-4">
-                                <img src={allImages[modalIndex].url} alt="Gallery Modal" className="max-h-full max-w-full object-contain shadow-lg rounded-md" />
-                            </div>
-                            <button onClick={nextModalImage} style={{ width: '32px', height: '32px', borderRadius: '30px', backgroundColor: '#E0E0E0', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="hover:bg-gray-300 transition">
-                                <ChevronRight size={20} color="white" strokeWidth={3} />
-                            </button>
-                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/50 text-white px-3 py-1 rounded-full text-sm">
-                                {modalIndex + 1} / {allImages.length}
+
+                        {/* Body Container (Flex Column) - ครอบส่วนที่กำหนด */}
+                        <div className="w-[835px] h-[521px] flex flex-col items-center justify-center bg-white border-l-[2px] border-r-[2px] border-b-[2px] border-[#EEEEEE] rounded-bl-[8px] rounded-br-[8px] pb-[64px]">
+
+                            {/* ✅ DIV ครอบ Main Image + Thumbnails (707x393) */}
+                            <div className="w-[707px] h-[393px] flex flex-col border border-[#C2DCF3] rounded-[8px] overflow-hidden bg-white">
+
+                                {/* 2.1 Main Image Area */}
+                                <div className="relative w-full flex-1 flex-shrink-0 overflow-hidden group bg-gray-50">
+                                    <button
+                                        onClick={prevModalImage}
+                                        className="absolute left-2 top-1/2 -translate-y-1/2 z-10 w-[32px] h-[32px] bg-[#3A82CE66] border border-[#95C3EA] hover:bg-[#3A82CE] rounded-full flex items-center justify-center text-white transition-all shadow-sm cursor-pointer"
+                                    >
+                                        <ChevronLeft size={20} strokeWidth={2.5} />
+                                    </button>
+
+                                    <img
+                                        src={mainImage.url}
+                                        alt="Gallery Main"
+                                        className="w-full h-full object-cover transition-opacity duration-300"
+                                    />
+
+                                    <button
+                                        onClick={nextModalImage}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 z-10 w-[32px] h-[32px] bg-[#3A82CE66] border border-[#95C3EA] hover:bg-[#3A82CE] rounded-full flex items-center justify-center text-white transition-all shadow-sm cursor-pointer"
+                                    >
+                                        <ChevronRight size={20} strokeWidth={2.5} />
+                                    </button>
+                                </div>
+
+                                {/* 2.2 Thumbnails Area (Queue: Show Next 6 Images) */}
+                                <div className="w-[707px] h-[84px] bg-white flex items-center justify-center shrink-0 border-t border-[#C2DCF3]">
+                                    <div className="flex items-center w-full">
+                                        {thumbnails.map((img, idx) => (
+                                            <div
+                                                key={`${img.url}-${idx}`}
+                                                onClick={() => clickThumbnail(idx + 1)}
+                                                // ✅ ปรับขนาดเป็น w-[117px] h-[84px]
+                                                className="relative h-[84px] w-[117px] cursor-pointer rounded-lg overflow-hidden transition-all duration-300 border border-transparent hover:opacity-100 opacity-60 hover:scale-105 flex-shrink-0"
+                                            >
+                                                <img
+                                                    src={img.url}
+                                                    alt={`Thumbnail ${idx}`}
+                                                    className="w-full h-full object-cover"
+                                                />
+                                            </div>
+                                        ))}
+                                        {/* Fill empty slots if less than 6 thumbnails */}
+                                        {Array.from({ length: Math.max(0, 6 - thumbnails.length) }).map((_, i) => (
+                                            // ✅ ปรับขนาดช่องว่างให้เท่ากัน
+                                            <div key={`empty-${i}`} className="h-[84px] w-[117px] bg-gray-50 rounded-lg flex-shrink-0 border border-gray-100" />
+                                        ))}
+                                    </div>
+                                </div>
+
                             </div>
                         </div>
                     </div>
@@ -311,7 +372,7 @@ function DetailContent() {
                         </h1>
                     </div>
 
-                    {/* HERO IMAGE */}
+                    {/* HERO IMAGE (On Page) */}
                     <div className="w-full h-[414px] bg-[#DEECF9] mt-6">
                         <div className="w-full max-w-[1440px] h-[414px] mx-auto flex justify-center">
                             <div className="w-full h-[445px] flex flex-col gap-[16px] px-[156px]">
@@ -378,7 +439,7 @@ function DetailContent() {
                                             Tips
                                         </h3>
                                     </div>
-                                    
+
                                     {/* ✅ Render Tips (Footwear + Outfit) */}
                                     {renderTips()}
                                 </div>
